@@ -36,39 +36,36 @@ ENV JETA_SCRIPTS=/srv/jeta/code/scripts
 ENV ARCHIVE_DEFINITION_SOURCE="${JETA_SCRIPTS}/sql/create.archive.meta.sql"
 
 # Install core system packages
-RUN set -x \
-    && apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+RUN \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install --yes \
         curl \
-        supervisor \
         ipython \
+        libqt5gui5 \
+        nodejs \
+        npm \
         python3-matplotlib \
         python3-pip \
-        libqt5gui5 \
         python3-pyqt4 \
-        npm \
-        nodejs \
-        wget \
+        supervisor \
         vim \
-    && apt-get clean
+        wget \
+    && \
+    apt-get clean
 
 # Install required version of conda for the ska3 build script
-RUN set -x \
-    && wget https://repo.continuum.io/miniconda/Miniconda3-4.3.21-Linux-x86_64.sh \
-    && bash ./Miniconda3-4.3.21-Linux-x86_64.sh -f -b -p ${CONDA_ROOT} \
-    && rm -f Miniconda3-4.3.21-Linux-x86_64.sh \
-    && echo 'export PATH='${CONDA_ROOT}'/bin:$PATH' >>/etc/profile
+RUN \
+    wget https://repo.continuum.io/miniconda/Miniconda3-4.3.21-Linux-x86_64.sh && \
+    bash ./Miniconda3-4.3.21-Linux-x86_64.sh -f -b -p ${CONDA_ROOT} && \
+    rm -f Miniconda3-4.3.21-Linux-x86_64.sh && \
+    echo 'export PATH='${CONDA_ROOT}'/bin:$PATH' >>/etc/profile
 
-RUN set -x \
-    && conda config --env --set always_yes true \
-    && conda create -n ${SKA_ENV} -c https://cxc.cfa.harvard.edu/mta/ASPECT/jska3-conda --yes ska3-flight
+RUN \
+    conda config --env --set always_yes true && \
+    conda create -n ${SKA_ENV} -c https://cxc.cfa.harvard.edu/mta/ASPECT/jska3-conda --yes ska3-flight
 
 # Create project directories
-RUN \
-    mkdir --parents \
-        /srv/jeta/code \
-        /srv/jeta/log \
-        /srv/jeta/api
+RUN mkdir --parents /srv/jeta/{api,code,log}
 
 # Copy source code into container
 COPY jeta /srv/jeta/code/jeta
