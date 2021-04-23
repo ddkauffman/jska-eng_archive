@@ -87,7 +87,4 @@ WORKDIR /srv/jeta/
 # Expose the port for raven
 EXPOSE 9232
 
-# Expose the port for jupyterhub
-EXPOSE 5050
-
 ENTRYPOINT ["/entrypoint.sh"]
