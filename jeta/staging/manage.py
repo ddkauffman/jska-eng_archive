@@ -1,14 +1,10 @@
 import os
 import time
+import glob
 import shutil
 
 import h5py
-
-import pickle
-import sqlite3
-import glob
-import ntpath
-import uuid
+from astropy.time import Time
 
 import pyyaks.logger
 import pyyaks.context
@@ -16,9 +12,11 @@ import pyyaks.context
 import jeta.archive.file_defs as file_defs
 from jeta.archive.utils import get_env_variable
 
+
+# System Variables
 ENG_ARCHIVE = get_env_variable('TELEMETRY_ARCHIVE')
 STAGING_DIRECTORY = get_env_variable('STAGING_DIRECTORY')
-
+JETA_LOG_ROOT = get_env_variable('JETA_LOG_ROOT')
 
 # The backlog is a special activity that hosts ingest files that should still be ingested
 # but processing them is behind. i.e. can be any number of files for any range.
@@ -27,6 +25,13 @@ BACKLOG_DIRECTORY = f'{STAGING_DIRECTORY}backlog/'
 # msid_files = pyyaks.context.ContextDict('update.msid_files',
 #                                         basedir=ENG_ARCHIVE)
 # msid_files.update(file_defs.msid_files)
+
+logger = pyyaks.logger.get_logger(
+    filename=f'{JETA_LOG_ROOT}jeta.staging.log',
+    name='jeta_logger',
+    level='INFO',
+    format="%(asctime)s %(message)s"
+)
 
 
 def _format_activity_destination(dst):
@@ -47,7 +52,7 @@ def _sort_ingest_files_by_start_time(list_of_files=[]):
     ingest_list = []
 
     for file in list_of_files:
-        with h5py.File(file, 'r') as f:
+        with h5py.File(str(file), 'r') as f:
 
             tstart = f['samples']["data1"].attrs['dataStartTime'][0]/1000
             tstop = f['samples'][f"data{len(f['samples'])}"].attrs['dataStopTime'][0]/1000
@@ -62,27 +67,77 @@ def _sort_ingest_files_by_start_time(list_of_files=[]):
 
     return sorted(ingest_list, key=lambda k: k['tstart'])
 
+# FIXME
+def _is_file_in_range(file, tstart, tstop):
 
-def get_staged_files(stage_dir=STAGING_DIRECTORY, format='h5'):
+    if Time(file['tstart'], format='unix') > Time(tstop, format='unix'):
+        return False
+    if Time(file['tstop'], format='unix') < Time(tstart, format='unix'):
+        return False
+    if Time(file['tstart'], format='unix') >= Time(tstart, format='unix') or Time(tstop, format='unix') <= Time(file['tstop'], format='unix'):
+        return True
+    else:
+        return False
+
+
+def get_staged_files(stage_dir=STAGING_DIRECTORY, format='h5', source="E"):
     """Get list of files from a staging directory
     """
-
+    logger.info(f"Starting legacy file discovery in {stage_dir} ... ")
     files = []
-    files.extend(sorted(glob.glob(f"{stage_dir}E*.{str(format).upper()}.")))
+    files.extend(sorted(glob.glob(f"{stage_dir}E*.{str(format).upper()}")))
     files.extend(sorted(glob.glob(f"{stage_dir}E*.{str(format).lower()}")))
+
+    logger.info(f"{len(files)} file(s) total staged in {stage_dir} ...")
 
     return files
 
 
-def get_staged_files_by_date(tstart, tstop, stage_dir=STAGING_DIRECTORY, format='h5'):
-    files = _sort_ingest_files_by_start_time(get_staged_files(
-            stage_dir,
-            format
+def get_staged_files_by_interval(tstart, tstop, stage_dir=STAGING_DIRECTORY, format='h5'):
+    from astropy.time import Time
+
+    logger.info(f'Targeting files in range from {Time(tstart, format="yday").iso} to {Time(tstop, format="yday").iso} ')
+
+    """ Find a list of files for a given time interval for data coverage.
+
+    Parameters
+    ----------
+        tstart : str
+            A string representing the start of the data coverage interval
+            that the files should contain data for in unix time format.
+        tstop : str
+            A string representing the stop of the data coverage interval
+            that the files should contain data for in unix time format.
+        stage_dir : str
+            The path to the staging area
+        format : str
+            File extention for the type of ingest files
+
+    Returns
+    -------
+        list of filenames that contain all the data for the specified
+        range.
+    """
+
+    unix_tstart = Time(tstart, format='yday').unix
+    unix_tstop = Time(tstop, format='yday').unix
+
+    ingest_files = _sort_ingest_files_by_start_time(get_staged_files(
+            stage_dir=stage_dir,
+            format=format
         )
     )
-    return [
-       file['filename'] for file in files if file['tstart'] <= tstart or tstop >= file['tstart']
-    ]
+
+    total_ingest_file_count = len(ingest_files)
+
+    filtered_files = []
+
+    for idx, file in enumerate(ingest_files):
+        if _is_file_in_range(file, unix_tstart, unix_tstop):
+            filtered_files.append(ingest_files.pop(idx))
+
+    logger.info(f'Returning {len(filtered_files)}/{total_ingest_file_count} ingest files in the range {Time(filtered_files[0]["tstart"], format="unix").iso} --> {Time(filtered_files[-1]["tstop"], format="unix").iso} ')
+    return filtered_files
 
 
 def get_files_for_activity(name):
@@ -194,3 +249,17 @@ def remove_activity(name):
     _activity = f"{STAGING_DIRECTORY}{name}"
     if os.path.exists(_activity):
         return os.remove(_activity)
+
+if __name__ == "__main__":
+
+    logger.info("=-=-=-=-=-=-=-=-=-=JETA REPORT (STAGING)=-=-=-=-=-=-=-=-=-=-=")
+
+    ingest_file_subset = get_staged_files_by_interval('2021:159:00:00:00.000', '2021:162:23:59:59.999')
+
+    logger.info(f"{len(ingest_file_subset)} file(s) in target range ...")
+
+    for f in ingest_file_subset:
+        logger.info("Include: " + str(Time(f['tstart'], format="unix").iso) + " " + str(Time(f['tstop'], format="unix").iso))
+
+    logger.info("=-=-=-=-=-=-=-=-=-=-=-=END REPORT=-=-=-=-=-=-=-=-=-=-=-=-=-=")
+

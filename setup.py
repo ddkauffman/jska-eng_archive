@@ -5,7 +5,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='jeta',
-    version='1.10.0',
+    version='1.11.2',
     description='Modules supporting JWST engineering telemetry archiving.',
     license='BSD 3-Clause',
     long_description="",
@@ -18,6 +18,7 @@ setup(
         'jeta.staging',
         'jeta.archive.derived',
         'jeta.config',
+        'jeta.config.*',
         'jeta.core',
         'jeta.ingest',
         'jeta.tests',
@@ -27,7 +28,7 @@ setup(
         'scripts/sql/create.archive.meta.sql'
     ],
     classifiers=[
-        'Development Status :: v1.10.0',
+        'Development Status :: v1.11.2',
         'License :: BSD 3-Clause',
     ]
 )

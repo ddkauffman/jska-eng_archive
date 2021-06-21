@@ -41,3 +41,4 @@ linux_deploy.sh
 .vscode/
 jeta.code-workspace
 jeta/staging/.coverage
+scripts/shell/run_local.sh

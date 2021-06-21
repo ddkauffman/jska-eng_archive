@@ -2,42 +2,45 @@
 # see LICENSE.rst
 
 from __future__ import print_function, division, absolute_import
-from io import FileIO
 
+# Python Standard Library Packages
 import os
 import glob
+import pickle
 from uuid import uuid1
 from functools import partial
-import pickle
-from random import seed
-import torch
 
 from collections import (
-    Counter,
-    OrderedDict,
     defaultdict,
     deque,
 )
 
+# Persistent Storage Packages
+import h5py
+import tables
+
+# Data Science Packages
+import torch
+import numpy as np
+import pandas as pd
 from astropy.time import Time
+
+# TODO: Replace with astropy.time.Time
 from Chandra.Time import DateTime
 
-# import Ska.File
+# Legacy Packages
 import Ska.DBI
-import Ska.Numpy
 import pyyaks.logger
 import pyyaks.context
 
-import h5py
-import tables
-import numpy as np
-
-from jeta.celery import app
-
+# Project Imports
 import jeta.archive.fetch as fetch
 import jeta.archive.file_defs as file_defs
 
+from jeta.staging.manage import get_staged_files_by_interval
 from jeta.archive.utils import get_env_variable
+
+from jeta.config.settings.base import EARLIST_INGEST_FILE_DATE
 
 # Frequency Per Day to ingest
 INGEST_CADENCE = 2
@@ -58,7 +61,8 @@ ENG_ARCHIVE = get_env_variable('TELEMETRY_ARCHIVE')
 TELEMETRY_ARCHIVE = get_env_variable('TELEMETRY_ARCHIVE')
 STAGING_DIRECTORY = get_env_variable('STAGING_DIRECTORY')
 
-# Calculate the number of files per year for archive space allocation prediction/allocation.
+# Calculate the number of files per year for archive space allocation
+# prediction/allocation.
 FILES_IN_A_YEAR = (AVG_NUMBER_OF_FILES * INGEST_CADENCE) * 365
 
 ft = fetch.ft
@@ -71,7 +75,7 @@ arch_files = pyyaks.context.ContextDict('update.arch_files',
 arch_files.update(file_defs.arch_files)
 
 logger = pyyaks.logger.get_logger(
-    filename='/var/log/jeta.update.log',
+    filename=os.path.join(os.environ['JETA_LOG_ROOT'], 'jeta.ingest.log'),
     name='jeta_logger',
     level='INFO',
     format="%(asctime)s %(message)s"
@@ -95,7 +99,8 @@ def _reset_storage():
 
 
 def _create_content_dir():
-    """ Make empty files and directories for msids, msids.pickle, and archive.meta.info.db3
+    """ Make empty files and directories for msids, msids.pickle,
+        and archive.meta.info.db3
     """
 
     dirname = msid_files['contentdir'].abs
@@ -356,7 +361,6 @@ def _append_h5_col_tlm(msid, epoch):
     except Exception as err:
         logger.error(f'{msid} couldnt append the normal way {type(_values[msid])} | {[_values[msid]]} | {_values[msid]}')
 
-
     _update_index_file(msid, epoch, index)
 
     values_h5.close()
@@ -419,6 +423,12 @@ def _allocate_large_sample(preallocation_size):
     ])
 
 
+# TODO: Implement this function using pandas and evaluate
+# performance
+def _organize_data_for_append_pd(large_sample, mdmap):
+    pass
+
+
 def _organize_data_for_append(large_sample, mdmap):
 
     missing_ids = []
@@ -465,21 +475,17 @@ def _sort_ingest_files_by_start_time(list_of_files=[]):
     return sorted(ingest_list, key=lambda k: k['tstart'])
 
 
-def get_archive_files():
-    """Get list of files to ingest by examining the file staging area
-    """
-
-    files = []
-
-    logger.info(f"Starting legacy file discovery in {STAGING_DIRECTORY} ... ")
-    files.extend(sorted(glob.glob(f"{STAGING_DIRECTORY}E*.h5")))
-
-    logger.info(f"{len(files)} file(s) staged in {STAGING_DIRECTORY} ...")
-
-    return files
-
-
 def _get_ingest_chunk_sequence(ingest_files):
+    """
+     get a the list of files groups (chunks) that will be ingests together
+    i.e. [1, 2, 1, 3] means that given the sorted list of ingest files
+    [file1, file2, file3, file4, file5, file6, file7] they would be
+    processed
+    these groups [(file1), (file2, file3), (file4), (file5, file6, file7)]
+    groups of files have their data aggragated and sorted by time before
+    appending to archive.
+
+    """
 
     ingest_chunk_sequence = []
 
@@ -575,14 +581,15 @@ def process_ingest_files(files_to_process, tstart, tstop, ingest_id, chunks):
         # if len(file_processing_queue) < chunk:
         #     chunk = len(file_processing_queue)
 
-        chunk = chunks[files_to_process[chunk_group]['tstart']]
+        # chunk = chunks[files_to_process[chunk_group]['tstart']]
+        chunk = chunks[chunk_group]
 
         file_processing_chunk = [
             file_processing_queue.popleft()
-            for i in range(chunk)
+            for i in range(1)
         ]
 
-        chunk_group += chunk
+        chunk_group += 1
 
         # Sum the number of points for a chunk to get pre-allocation value
         num_points_in_chunk = sum([i['numPoints'] for i in file_processing_chunk])
@@ -678,24 +685,19 @@ def process_ingest_files(files_to_process, tstart, tstop, ingest_id, chunks):
         )
 
         # more or less create function 'pointers' for speed (i.e. python doesn't have to look up the address every iteration)
-        append_func = _append_h5_col_tlm
-        sort_func = sort_msid_data_by_time
-        delta_funk = calculate_delta_times
+        append_data = _append_h5_col_tlm
+        sort_data = sort_msid_data_by_time
+        delta_times = calculate_delta_times
 
         for msid in msids:
             try:
-                sort_func(msid, bucket['times'][msid], bucket['values'][msid])
-                # if _times[msid].ndim == 0:
-                #     logger.warning(f'{msid} times data has diminsion {_times[msid].ndim}')
-                #     t0 = _times[msid]
-                #     epoch = Time([t0/1000.0], format='unix').jd
-                # else:
+                sort_data(msid, bucket['times'][msid], bucket['values'][msid])
                 t0 = np.atleast_1d(_times[msid])[0]
                 epoch = Time(t0/1000.0, format='unix').jd
-                delta_funk(msid, _times[msid], epoch)
+                delta_times(msid, _times[msid], epoch)
 
                 # Data preprocessing has ended, its now time to write to the archive.
-                append_func(msid, epoch)
+                append_data(msid, epoch)
 
             except Exception as err:
                 # TODO: Write tests for edge cases and develop exception handling scheme.
@@ -738,7 +740,7 @@ def process_ingest_files(files_to_process, tstart, tstop, ingest_id, chunks):
     return processed_files
 
 
-def move_archive_files(filetype, processed_ingest_files):
+def move_archive_files(processed_ingest_files):
 
     if processed_ingest_files is not None:
 
@@ -761,21 +763,11 @@ def move_archive_files(filetype, processed_ingest_files):
         )
 
 
-def _ingest():
+def _ingest(ingest_files=[]):
 
     # unique id for this run of the ingest.
     ingest_id = uuid1()
 
-    # get a list of hdf5 (ingest) files from the staging area and sort by
-    # the files start of coverage attribute.
-    ingest_files = _sort_ingest_files_by_start_time(get_archive_files())
-
-    # get a the list of files groups (chunks) that will be ingests together
-    # i.e. [1, 2, 1, 3] means that given the sorted list of ingest files
-    # [file1, file2, file3, file4, file5, file6, file7] they would be processed in
-    # theses groups [(file1), (file2, file3), (file4), (file5, file6, file7)]
-    # groups of files have their data aggragated and sorted by time before
-    # appending to archive.
     chunks = _get_ingest_chunk_sequence(ingest_files)
 
     if ingest_files:
@@ -784,26 +776,23 @@ def _ingest():
         tstart = ingest_files[0]['tstart']
         tstop = ingest_files[-1]['tstop']
 
-        #
         logger.info(
             (
-                f"Telemetry data coverage for ALL discovered files (tstart, tstop): "
+                f"tlm data coverage for ALL discovered files (tstart, tstop): "
                 f"({Time(tstart, format='unix').iso},"
                 f"{Time(tstop, format='unix').iso})"
             )
         )
 
-        #
+        # open a connection to the database and disable autocommits
+        # to support rollback.
         db = Ska.DBI.DBI(
             dbi='sqlite',
             server=msid_files['archfiles'].abs,
             autocommit=False
         )
 
-        #
-        out = db.fetchone('SELECT count(*) FROM ingest_history')
-
-        #
+        # create a record for to track this ingest.
         ingest_record = {
             'discovered_files': len(ingest_files),
             'tstart': -1,
@@ -815,11 +804,11 @@ def _ingest():
             'uuid': str(ingest_id)
         }
 
-        #
         db.insert(ingest_record, 'ingest_history')
         db.commit()
 
-        #
+        # extract the data from the ingest files and write it
+        # to the archive.
         processed_ingest_files = process_ingest_files(
             ingest_files,
             tstart,
@@ -828,13 +817,14 @@ def _ingest():
             chunks=chunks
         )
 
-        # processed_ingest_files = update_telemetry_archive(files_to_ingest)
-        # move_archive_files(filetype, processed_ingest_files)
+        # create a timestamped tar file of the ingest files processed
+        # and move the *.tar.gz in a directory for processed files.
+        move_archive_files(processed_ingest_files)
     else:
-        logger.info('No ingest files discovered in {}')
+        logger.info(f'No ingest files discovered in {STAGING_DIRECTORY}')
 
 
-def main():
+def execute(tstart=EARLIST_INGEST_FILE_DATE, tstop=Time.now().yday, stage_dir=STAGING_DIRECTORY, format='h5'):
     """ Perform one full update of the data archive based on parameters.
 
     This may be called in a loop by the program-level main().
@@ -851,9 +841,12 @@ def main():
     known_msids = [x for x in pickle.load(open(msid_files['colnames'].abs, 'rb'))
                 if x not in fetch.IGNORE_COLNAMES]
 
-    _ingest()
+    ingest_files = get_staged_files_by_interval(tstart, tstop, stage_dir, format)
 
-    logger.info(f'=-=-=-=-=-=-=-=-=-INGEST COMPLETE-=-=-=-=-=-=-=-=-=')
+    _ingest(ingest_files)
+
+    logger.info('=-=-=-=-=-=-=-=-=-INGEST COMPLETE-=-=-=-=-=-=-=-=-=')
+
 
 if __name__ == "__main__":
-    main()
+    execute()
